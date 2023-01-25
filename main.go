@@ -2,8 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/md5"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,57 +18,15 @@ var log = setLogger()
 
 var (
 	// version and build info
-	buildStamp string
-	gitHash    string
-	goVersion  string
-	version    string
+	buildStamp = "dev"
+	gitHash    = "dev"
+	goVersion  = "dev"
+	version    = "dev"
+	inputPath  string
 )
 
-type md5Res struct {
-	Path  string
-	MD5   string
-	E     error
-	Check bool
-}
-
-func new(path string) *md5Res {
-	return &md5Res{Path: path}
-}
-
-func (m *md5Res) String() string {
-	if m.E != nil {
-		return fmt.Sprintf("%s\t%v", m.Path, m.E)
-	}
-	if m.Check {
-		return fmt.Sprintf("%s\tok", m.Path)
-	}
-	return fmt.Sprintf("%s\t%s", m.MD5, m.Path)
-}
-
-func (m *md5Res) Hash() {
-	if _, err := os.Stat(m.Path); os.IsNotExist(err) {
-		m.E = fmt.Errorf("not exist")
-		return
-	}
-
-	f, err := os.Open(m.Path)
-	if err != nil {
-		m.E = fmt.Errorf("failed to open file: %v", err)
-		return
-	}
-	defer f.Close()
-
-	h := md5.New()
-	if _, err := io.Copy(h, f); err != nil {
-		m.E = fmt.Errorf("failed at io.Copy: %v", err)
-	} else if err == nil && m.MD5 == "" {
-		m.MD5 = fmt.Sprintf("%x", h.Sum(nil))
-	} else if err == nil && m.MD5 != fmt.Sprintf("%x", h.Sum(nil)) {
-		m.E = fmt.Errorf("failed")
-	}
-}
-
-func reloadProgress(path string) map[string]string {
+// reloadProgress is used to resume the progress
+func reloadProgress(path string, check bool) map[string]string {
 	res := map[string]string{}
 	f, err := os.Open(path)
 	if err != nil {
@@ -91,14 +47,20 @@ func reloadProgress(path string) map[string]string {
 			log.Fatal(err)
 		}
 
-		lines := pattern.Split(strings.ReplaceAll(line, "'", ""), -1)
-		res[lines[0]] = lines[1]
+		lines := pattern.Split(strings.ReplaceAll(strings.TrimSpace(line), "'", ""), -1)
+		if len(lines) > 1 {
+			if check {
+				res[lines[0]] = lines[1]
+			} else {
+				res[lines[1]] = lines[0]
+			}
+		}
 	}
 	return res
 }
 
 // worker in goroutines to extract md5 and check
-func worker(wg *sync.WaitGroup, wc chan string, ic chan *md5Res) {
+func worker(wg *sync.WaitGroup, wc chan string, ic chan *MD5) {
 	defer wg.Done()
 	for {
 		file, ok := <-ic
@@ -106,26 +68,41 @@ func worker(wg *sync.WaitGroup, wc chan string, ic chan *md5Res) {
 			break
 		}
 		file.Hash()
-		// log.Infof("%v", file)
 		wc <- file.String()
 	}
 }
 
+// write saves the md5 and check results
 func write(output string, wc chan string, wg *sync.WaitGroup, bar *progressbar.ProgressBar) {
-	// open output file
-	f, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		log.Fatalf("failed to open %s: %s", output, err.Error())
-		os.Exit(1)
-	}
+	writer := bufio.NewWriter(os.Stdout)
+	if output != "" {
+		// open output file
+		f, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			log.Fatalf("failed to open %s: %s", output, err.Error())
+			os.Exit(1)
+		}
 
-	writer := bufio.NewWriter(f)
+		writer = bufio.NewWriter(f)
+
+		defer func() {
+			if err := writer.Flush(); err != nil {
+				log.Fatalf("failed to flush: %v", err)
+			}
+			if err := f.Close(); err != nil {
+				log.Fatalf("failed to close %s: %s", output, err.Error())
+			}
+		}()
+	}
 
 	// clean writer and file
 	defer wg.Done()
-	defer writer.Flush()
-	defer f.Close()
-	defer bar.Finish()
+
+	defer func() {
+		if err := bar.Finish(); err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	for {
 		res, ok := <-wc
@@ -135,8 +112,8 @@ func write(output string, wc chan string, wg *sync.WaitGroup, bar *progressbar.P
 
 		_, _ = writer.WriteString(res + "\n")
 
-		writer.Flush()
-		bar.Add(1)
+		_ = writer.Flush()
+		_ = bar.Add(1)
 
 		if bar.IsFinished() {
 			break
@@ -144,34 +121,45 @@ func write(output string, wc chan string, wg *sync.WaitGroup, bar *progressbar.P
 	}
 }
 
-func LoopDirsFiles(path string, progress map[string]string) []*md5Res {
-	files, err := os.ReadDir(path)
-	if err != nil {
+// LoopDirsFiles returns a list of filepath under the given directory
+func LoopDirsFiles(path string, progress map[string]string) []*MD5 {
+	res := make([]*MD5, 0)
+	if stat, err := os.Stat(path); os.IsNotExist(err) {
 		log.Fatal(err)
-	}
+	} else if !stat.IsDir() {
+		md5_ := newMD5(path, "", false)
+		if _, ok := progress[md5_.RelativePath()]; !ok {
+			res = append(res, md5_)
+		}
+	} else {
+		files, err := os.ReadDir(path)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	res := make([]*md5Res, 0)
-	for _, file := range files {
-		if file.IsDir() {
-			res = append(res, LoopDirsFiles(filepath.Join(path, file.Name()), progress)...)
-		} else {
-
-			p := filepath.Join(path, file.Name())
-			if _, ok := progress[p]; ok {
-				continue
+		for _, file := range files {
+			if file.IsDir() {
+				res = append(res, LoopDirsFiles(filepath.Join(path, file.Name()), progress)...)
+			} else {
+				p := filepath.Join(path, file.Name())
+				md5_ := newMD5(p, "", false)
+				if r, ok := progress[md5_.RelativePath()]; !ok {
+					if p == ".git/logs/HEAD" {
+						log.Infof("%v %v %v", md5_.RelativePath(), ok, r)
+					}
+					res = append(res, md5_)
+				}
 			}
-
-			res = append(res, new(p))
-
 		}
 	}
+
 	return res
 }
 
 func main() {
 	options := struct {
 		Input   string        `goptions:"-i, --input, description='The path to file or directory'"`
-		Output  string        `goptions:"-o, --output, description='The path to output file'"`
+		Output  string        `goptions:"-o, --output, description='The path to output file, default save to stdout'"`
 		Thread  int           `goptions:"-t, --thread, description='How many threads to use'"`
 		Check   string        `goptions:"-c, --check, description='Check exist md5'"`
 		Version bool          `goptions:"-v, --version, description='show version information'"`
@@ -195,23 +183,30 @@ func main() {
 		os.Exit(0)
 	}
 
-	ic := make(chan *md5Res)
+	if options.Input != "" {
+		if _, err := os.Stat(options.Input); os.IsNotExist(err) {
+			log.Fatal("%s not exist", options.Input)
+		}
+	}
+	inputPath = options.Input
+
+	ic := make(chan *MD5)
 	wc := make(chan string)
 	var wg sync.WaitGroup
 
-	progress := reloadProgress(options.Output)
+	progress := reloadProgress(options.Output, options.Check != "")
 	if len(progress) > 0 {
 		log.Infof("%d already finished", len(progress))
 	}
 
-	forCheck := make([]*md5Res, 0)
+	forCheck := make([]*MD5, 0)
 	if options.Check == "" {
 		log.Infof("Generate md5 for %s", options.Input)
 		forCheck = append(forCheck, LoopDirsFiles(options.Input, progress)...)
 	} else {
 		log.Infof("Check md5 of %s", options.Check)
-		for md5Str, path := range reloadProgress(options.Check) {
-			forCheck = append(forCheck, &md5Res{Path: filepath.Join(options.Input, path), MD5: md5Str, Check: true})
+		for md5Str, path := range reloadProgress(options.Check, options.Check != "") {
+			forCheck = append(forCheck, newMD5(absPath(path), md5Str, true))
 		}
 	}
 

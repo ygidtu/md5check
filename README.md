@@ -14,3 +14,18 @@ Global options:
     -h, --help    Show this help
 ```
 
+Similar to md5sum from linux with multithreading and resumed from last unfished progress
+
+```bash
+# generate md5 and print to console
+md5check -i ./ -t 10
+
+# generate md5 and save to given file
+md5check -i ./ -o md5sum.txt -t 10
+
+# check the existed md5 and print to console
+md5check -c md5sum.txt
+
+# check the existed md5 and save to given file, but support relative path
+md5check -c ../example/md5sum.txt -i ../example -o md5check.txt
+```
