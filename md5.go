@@ -6,10 +6,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 func absPath(path string) string {
-	if inputPath == "" {
+	log.Debugf("inputPath = %s; path = %s", inputPath, path)
+	regx := regexp.MustCompile("(\\./?)?")
+	if regx.MatchString(inputPath) || strings.HasPrefix(path, inputPath) {
 		if path, err := filepath.Abs(path); err != nil {
 			log.Fatal(err)
 		} else {
@@ -34,7 +38,11 @@ func newMD5(path, md5 string, check bool) *MD5 {
 
 // RelativePath returns relative path
 func (m *MD5) RelativePath() string {
-	res, err := filepath.Rel(inputPath, m.Path)
+	path, err := filepath.Abs(inputPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	res, err := filepath.Rel(path, m.Path)
 	if err != nil {
 		log.Fatal(err)
 	}

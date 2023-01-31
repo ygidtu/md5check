@@ -6,12 +6,15 @@ Multithreading md5sum and check tool
 Usage: md5check [global options] 
 
 Global options:
-    -i, --input   The path to file or directory (default: ./)
-    -o, --output  The path to output file
-    -t, --thread  How many threads to use (default: 4)
-    -c, --check   Check exist md5
-    -v, --version show version information
-    -h, --help    Show this help
+        -i, --input   The path to file or directory (default: ./)
+        -o, --output  The path to output file, default save to stdout
+        -t, --thread  How many threads to use (default: 4)
+        -c, --check   Check exist md5
+        -r, --resume  Resume and skip finished files
+        -f, --hidden  Calculate md5 to hidden files
+            --debug   Show debug information
+        -v, --version Show version information
+        -h, --help    Show this help
 ```
 
 Similar to md5sum from linux with multithreading and resumed from last unfished progress
